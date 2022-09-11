@@ -12,55 +12,121 @@ class State:
     obs: str = ''
     look: str = ''
     inventory: str = ''
-    graph: list = None
+    examine: dict = None
     valid_actions: list = None
+    graph: list = None
+    
+    
 
+def load_attributes():
+    global attributes
+    global readable
+    global MOVE_ACTIONS
+    MOVE_ACTIONS = 'north/south/west/east/northwest/southwest/northeast/southeast/up/down/enter/exit'.split('/')
 
-def build_kg(env, look):
+    with open('symtables/readable_tables.txt', 'r') as f:
+        readable = [str(a).strip() for a in f]
+
+    attributes = {}
+    attr_vocab = set()
+    for gn in readable:
+        attributes[gn] = {}
+
+        with open('symtables/' + gn + '.out', 'r') as f:
+            try:
+                for line in f:
+                    if "attribute" in line.lower():
+                        split = line.split('\t')
+                        if len(split) < 2:
+                            split = line.split()
+                            idx, attr = int(split[1]), split[2]
+                            if len(split) < 2:
+                                continue
+                        else:
+                            idx, attr = int(split[0].split(' ')[1]), split[1]
+                        if '/' in attr:
+                            attr = attr.split('/')[0]
+                        attributes[gn][idx] = attr.strip()
+                        attr_vocab.add(attr.strip())
+
+            except UnicodeDecodeError:
+                print("Decode error:", gn)
+                continue
+
+def build_kg(env, prev_act=None, prev_loc=None):
     triples = set()
 
     # Get player's location
     loc = env.get_player_location()
 
-    if not loc.name:
-        print('No location name!')
-        loc_name = look.split('\n')[0]
-        loc_name = jericho.util.clean(loc_name)
-    else:
-        loc_name = loc.name
-
+    # Get player object
+    player = env.get_player_object()
+    
+    # Get location object
+    loc = env.get_object(player.parent)
+    loc_name = loc.num if not loc.name else loc.name
     triples.add(('you', 'in', loc_name))
 
-    # print(jericho.defines.ABBRV_DICT)
-
     # Get objects in location
-    subtree = jericho.util.get_subtree(loc.num, env.get_world_objects())
+    player_subtree = jericho.util.get_subtree(player.num, env.get_world_objects())
 
-    o_nb = {}
-    for obj in subtree:
-        if obj.num == env.get_player_object().num:
-            continue
-        elif obj.parent == loc.num:
-            if not obj.name:
-                triples.add((obj.num, 'in', loc_name))
-                o_nb[obj.num] = obj.num
-            else:
-                triples.add((obj.name, 'in', loc_name))
-                o_nb[obj.num] = obj.name
+    # Get objects in current location (but not in inventory)
+    for obj in player_subtree:        
+        obj_name = obj.num if not obj.name else obj.name
+        if obj.num == player.num:
+          continue
+        elif obj.parent == loc.num:          
+          triples.add((obj_name, 'in', loc_name))
+        elif obj.parent == player.num:
+          triples.add(('you', 'has', obj_name))
+        else:
+          obj_parent = env.get_object(obj.parent)
+          obj_parent_name = obj_parent.num if not obj_parent.name else obj_parent.name
+          triples.add((obj_name, 'in', obj_parent_name))
 
-    for obj in subtree:
-        if obj.parent in o_nb:
-            if not obj.name:
-                triples.add((obj.num, 'in', o_nb[obj.parent]))
-            else:
-                triples.add((obj.name, 'in', o_nb[obj.parent]))
+    # Current location relative to previous location
+    if prev_loc:
+      if prev_act.lower() in MOVE_ACTIONS:
+          triples.add((loc.name, prev_act.replace(' ', '_'), prev_loc.name))
 
-    # Get inventory
-    inv = env.get_inventory()
-    for item in inv:
-        triples.add(('you', 'has', item.name))
+      if prev_act.lower() in jericho.defines.ABBRV_DICT.keys():
+          prev_act = jericho.defines.ABBRV_DICT[prev_act.lower()]
+          triples.add((loc.name, prev_act.replace(' ', '_'), prev_loc.name))
 
     return triples
+
+def clean(text):
+  bad_text = ["A strange little man in a long cloak appears suddenly in the room. He is wearing a high pointed hat embroidered with astrological"]
+  for bt in bad_text:
+    if bt in text:
+      # remove bt from text and all the text after
+      head, sep, tail = text.partition(bt)
+      text = head
+  return text
+
+
+def examine_objects(env, state):
+  obj_desc = {}
+
+  # Get player object
+  player = env.get_player_object()
+
+  # Get location object
+  loc = env.get_object(player.parent)
+
+  # Get objects in location
+  player_subtree = jericho.util.get_subtree(player.num, env.get_world_objects())
+
+  for obj in player_subtree:
+    if obj.num != player.num:
+      desc = jericho.util.clean(env.step('examine ' + obj.name)[0])
+      env.set_state(state)    
+      
+      desc = clean(desc)
+
+      obj_desc[obj.name] = desc
+
+  return obj_desc
 
 
 def build_dataset(rom):
@@ -68,38 +134,49 @@ def build_dataset(rom):
     walk = env.get_walkthrough()
     data = []
     action = ''
+    next_graph = None
+    # prev_act = None
+    prev_loc = None
 
     # for act in walk:
-    for i, act in enumerate(walk[:5]):
+    for i, act in enumerate(walk[:6]):
         state = env.get_state()
 
         # Record state before step
-        look = env.step('look')[0]
+        look = clean(env.step('look')[0])
         env.set_state(state)
 
         obs = '' if i == 0 else next_obs
 
-        inv_desc = env.step('inventory')[0]
+        inv_desc = clean(env.step('inventory')[0])
         env.set_state(state)
-        graph = build_kg(env, obs)
+        graph = next_graph if next_graph else build_kg(env)
+
+        examine = examine_objects(env, state)
 
         state_text = State(obs=obs, look=look,
                            inventory=inv_desc, graph=list(graph),
-                           valid_actions=env.get_valid_actions())
+                           valid_actions=env.get_valid_actions(), examine=examine)
+
+        prev_loc = env.get_player_location()
 
         # Take a step and save state
         next_obs, rew, done, info = env.step(act)
         state = env.get_state()
 
-
-        next_look = env.step('look')[0]
+        next_look = clean(env.step('look')[0])
         env.set_state(state)
-        next_inv_desc = env.step('inventory')[0]
+        next_inv_desc = clean(env.step('inventory')[0])
         env.set_state(state)
-        next_graph = build_kg(env, next_look)
+        next_graph = build_kg(env, act, prev_loc)
+        next_examine = examine_objects(env, state)
         next_state_text = State(obs=next_obs, look=next_look,
-                                inventory=next_inv_desc, graph=list(next_graph),
-                                valid_actions=env.get_valid_actions())
+                                inventory=next_inv_desc, graph=list(
+                                    next_graph),
+                                valid_actions=env.get_valid_actions(), examine=next_examine)
+
+        # prev_act = act
+        
 
         sample = {
             'state': asdict(state_text),
@@ -120,9 +197,18 @@ def build_dataset(rom):
 if __name__ == '__main__':
 
     # roms = glob("roms/*.z*")
-    # roms = ["roms/zork1.z5"]
+    
     # roms = ["roms/snacktime.z8"]
-    roms = ["roms/zork1.z5"]
+    
+    # Fantasy
+    # roms = ["roms/zork1.z5"]
+    # roms = ["roms/zork2.z5"]
+    roms = ["roms/zork3.z5"]
+    # roms = ["roms/dragon.z5"]
+    # roms = ["roms/deephome.z5"]
+
+    load_attributes()
+
     for rom in roms:
         build_dataset(rom)
 
@@ -144,7 +230,7 @@ for rom in roms[2:3]:
         print('----------------------------------------')
         # print(env.get_state())
         loc = env.get_player_location()
-        you = env.get_player_object()
+        you = env.get_player_objec
         inv = env.get_inventory()
         print('inventory:', inv)
 
