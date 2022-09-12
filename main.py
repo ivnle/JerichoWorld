@@ -85,13 +85,13 @@ def build_kg(env, prev_act=None, prev_loc=None):
           triples.add((obj_name, 'in', obj_parent_name))
 
     # Current location relative to previous location
-    if prev_loc:
-      if prev_act.lower() in MOVE_ACTIONS:
-          triples.add((loc.name, prev_act.replace(' ', '_'), prev_loc.name))
+    # if prev_loc:
+    #   if prev_act.lower() in MOVE_ACTIONS:
+    #       triples.add((loc.name, prev_act.replace(' ', '_'), prev_loc.name))
 
-      if prev_act.lower() in jericho.defines.ABBRV_DICT.keys():
-          prev_act = jericho.defines.ABBRV_DICT[prev_act.lower()]
-          triples.add((loc.name, prev_act.replace(' ', '_'), prev_loc.name))
+    #   if prev_act.lower() in jericho.defines.ABBRV_DICT.keys():
+    #       prev_act = jericho.defines.ABBRV_DICT[prev_act.lower()]
+    #       triples.add((loc.name, prev_act.replace(' ', '_'), prev_loc.name))
 
     return triples
 
@@ -129,6 +129,40 @@ def examine_objects(env, state):
   return obj_desc
 
 
+def update_graph(graph, next_graph, env, act):
+  
+  # make copy of graph
+
+  graph_copy = graph.copy()
+  triples_to_add = next_graph - graph_copy
+
+  loc_name = [t for t in graph_copy if (t[0] == 'you' and t[1]=='in')][0]
+  loc_name = loc_name[2]
+
+  for triple in triples_to_add:
+    sub, rel, obj = triple
+  
+    # Move from surrounding object to inventory
+    if sub == 'you' and rel == 'has':
+      print(loc_name)
+      graph_copy.discard((obj, 'in', loc_name))
+    
+    if sub == 'you' and rel == 'in':
+      graph_copy.discard(('you', 'in', loc_name))
+
+      if act.lower() in MOVE_ACTIONS:
+          graph_copy.add((obj, act.replace(' ', '_'), loc_name))
+
+      if act.lower() in jericho.defines.ABBRV_DICT.keys():
+          act = jericho.defines.ABBRV_DICT[act.lower()]
+          graph_copy.add((obj, act.replace(' ', '_'), loc_name))
+      
+
+    graph_copy.add(triple)
+  
+  return graph_copy
+  
+
 def build_dataset(rom):
     env = jericho.FrotzEnv(rom)
     walk = env.get_walkthrough()
@@ -139,7 +173,7 @@ def build_dataset(rom):
     prev_loc = None
 
     # for act in walk:
-    for i, act in enumerate(walk[:6]):
+    for i, act in enumerate(walk[:50]):
         state = env.get_state()
 
         # Record state before step
@@ -170,12 +204,15 @@ def build_dataset(rom):
         env.set_state(state)
         next_graph = build_kg(env, act, prev_loc)
         next_examine = examine_objects(env, state)
+
+        # next_graph = update_graph(graph, next_graph, env, act)
+
         next_state_text = State(obs=next_obs, look=next_look,
                                 inventory=next_inv_desc, graph=list(
                                     next_graph),
                                 valid_actions=env.get_valid_actions(), examine=next_examine)
 
-        # prev_act = act
+        
         
 
         sample = {
